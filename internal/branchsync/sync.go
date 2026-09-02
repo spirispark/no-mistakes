@@ -63,8 +63,10 @@ const (
 	// pipeline head still exists and can be anchored and taken back.
 	SafetyPipelineOwnedRecoverable = "blocked_pipeline_owned_recoverable"
 	// SafetyPipelineOwnedHeadLost reports a terminal run whose recorded
-	// pipeline head is provably gone from every object store no-mistakes can
-	// read, while every head the run recorded is already contained in the
+	// pipeline head is no longer importable - either it is provably gone
+	// from every object store no-mistakes can read, or it is still reachable
+	// as a commit object but no longer an ancestor of the worktree branch -
+	// while every head the run recorded is already contained in the
 	// operator's branch. There is nothing left to import, so the custody
 	// return is a stamp that moves no file and no ref.
 	SafetyPipelineOwnedHeadLost = "blocked_pipeline_owned_head_lost"
@@ -1747,7 +1749,10 @@ func isObjectID(sha string) bool {
 
 // CustodyRecoverable reports the pipeline-owned classifications whose proven
 // next action is the guarded custody return: the preserved head still exists
-// and can be taken back, or it is provably gone and custody is only a stamp.
+// and can be taken back; it is provably gone from every store no-mistakes can
+// read and custody is only a stamp; or it is still reachable as a commit
+// object but no longer an ancestor of the worktree branch while every head
+// the run recorded is already contained in it.
 func CustodyRecoverable(state State) bool {
 	return state.State == StatePipelineOwned &&
 		(state.Safety == SafetyPipelineOwnedRecoverable || state.Safety == SafetyPipelineOwnedHeadLost)
