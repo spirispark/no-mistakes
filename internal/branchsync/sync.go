@@ -1552,8 +1552,14 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 // nothing ever anchors that head, and once the transient commit is collected
 // every recovery path refuses it. The branch then reports
 // blocked_recover_preserved_head_missing with a manual next action forever, a
-// fresh run is refused for the same reason, and the only escape is editing
-// internal state by hand (issue: dogfood run 01M1GE0QM433D9G2A0QDMJFGJH).
+// fresh run is refused for the same reason, and before this function existed
+// the only escape was editing internal state by hand. The dogfood run that
+// exposed that gap (01M1GE0QM433D9G2A0QDMJFGJH) turned out to be the second
+// positive proof handled by worktreeBranchAlreadyHoldsPipeline - the recorded
+// head was still reachable as an orphan object while the worktree branch
+// already contained every head the run recorded. Both proofs reach the same
+// SafetyPipelineOwnedHeadLost safety and the same recover_custody next action,
+// but only this function governs the genuinely-lost case.
 //
 // Release is allowed only on positive proof, and every clause fails closed:
 //   - Absence is read through git.ObjectMissing in BOTH stores no-mistakes
