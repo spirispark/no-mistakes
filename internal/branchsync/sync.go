@@ -603,6 +603,14 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if s.lostPipelineHeadReleasable(ctx, &state, run) {
 		return s.finishRecover(ctx, run, false)
 	}
+	// Orphan-head case: the recorded head is still reachable (e.g. as a loose
+	// object in the main repo) so the provably-missing clause above refuses,
+	// but the worktree branch already contains every head the run recorded
+	// through ancestry, the worktree is clean, and no recovery anchor
+	// contradicts the recorded head. Stamp custody; nothing is stranded.
+	if s.worktreeBranchAlreadyHoldsPipeline(ctx, &state, run) {
+		return s.finishRecover(ctx, run, false)
+	}
 	if run.TerminalHeadVerifiedAt == nil {
 		branch := state.Local.Branch
 		if strings.TrimSpace(s.GateDir) == "" {
@@ -1459,6 +1467,12 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 				state.NextAction = &NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover"}
 				return
 			}
+			if s.worktreeBranchAlreadyHoldsPipeline(ctx, state, run) {
+				state.Safety = SafetyPipelineOwnedHeadLost
+				state.Error = "the run finished " + string(run.Status) + " and its recorded pipeline head " + run.HeadSHA + " is no longer reachable as an ancestor of this branch, but every head this run recorded is already contained in this branch; returning custody strands nothing and changes no file or ref"
+				state.NextAction = &NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover"}
+				return
+			}
 			state.Safety = "blocked_recover_preserved_head_missing"
 			state.Error = "the run finished " + string(run.Status) + " but its recorded pipeline head is not available in the invoking worktree or local gate; inspect and reconcile the recorded and live heads manually"
 			state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
@@ -1594,6 +1608,100 @@ func (s *Service) lostPipelineHeadReleasable(ctx context.Context, state *State, 
 		}
 		if !objectExists(ctx, s.workDir(), head) || !isAncestor(ctx, s.workDir(), head, local) {
 			return false
+		}
+	}
+	return true
+}
+
+// worktreeBranchAlreadyHoldsPipeline proves a guarded custody release for the
+// stranded-on-orphan case the live 01M1GE0QM433D9G2A0QDMJFGJH ship exposed:
+// the run's recorded pipeline head is no longer an ancestor of the worktree
+// branch, but the worktree branch has integrated every head this run recorded
+// (the submitted head, the pushed head when one exists, and the gate's branch
+// tip), the worktree is clean, and no surviving recovery anchor (worktree
+// refs/no-mistakes/recover/<run>, refs/no-mistakes/recover-local/<run>, or
+// gate refs/no-mistakes/recover/<run>) contradicts the recorded head. This
+// is positive proof, not the absence of evidence: any unreadable worktree,
+// any dirty state, any missing ancestor, any non-matching recovery ref, or
+// any unresolved symbolic ref must still refuse.
+func (s *Service) worktreeBranchAlreadyHoldsPipeline(ctx context.Context, state *State, run *db.Run) bool {
+	if state == nil || run == nil || run.CustodyReturnedAt != nil || !terminalRunStatus(run.Status) {
+		return false
+	}
+	preserved := strings.TrimSpace(run.HeadSHA)
+	if !isObjectID(preserved) {
+		return false
+	}
+	if !state.Local.Clean {
+		return false
+	}
+	local := strings.TrimSpace(state.Local.Head)
+	submitted := strings.TrimSpace(ptr(run.SubmittedHeadSHA))
+	if local == "" || submitted == "" || preserved == local {
+		return false
+	}
+	// The recorded head must be UNREACHABLE from the worktree's branch: if it
+	// is still an ancestor (or equal to local), the ordinary recoverable
+	// path in Recover() handles it and this clause would skip the
+	// anchor-and-adopt work. If the local branch is an ancestor of the
+	// recorded head, the worktree can fast-forward to it once the gate
+	// refetches the object - that is the recoverable case, not this clause.
+	if isAncestor(ctx, s.workDir(), preserved, local) {
+		return false
+	}
+	if isAncestor(ctx, s.workDir(), local, preserved) {
+		return false
+	}
+	// The recorded head must be reachable as a commit from the worktree's
+	// git-dir. The live 01M1GE0QM433D9G2A0QDMJFGJH case leaves it as a loose
+	// object accessible through the main repo's commondir; a worktree that
+	// cannot see the object at all (separate clone, garbage-collected pack)
+	// must take the ordinary Recover() path that fetches the head from the
+	// gate and fast-forwards.
+	if !objectExists(ctx, s.workDir(), preserved) {
+		return false
+	}
+	if !isAncestor(ctx, s.workDir(), submitted, local) {
+		return false
+	}
+	if pushed := strings.TrimSpace(ptr(run.LastPushedSHA)); pushed != "" && pushed != local {
+		if !objectExists(ctx, s.workDir(), pushed) || !isAncestor(ctx, s.workDir(), pushed, local) {
+			return false
+		}
+	}
+	gateDir := strings.TrimSpace(s.GateDir)
+	if gateDir == "" {
+		return false
+	}
+	if _, err := os.Stat(gateDir); err != nil {
+		return false
+	}
+	// Require the gate's branch ref to be present and pointing at a real
+	// commit: a deleted branch is an unverifiable state, not a positive
+	// proof that the work has landed there.
+	gateBranch, readable := gateBranchHead(ctx, gateDir, state.Local.Branch)
+	if !readable || gateBranch == "" {
+		return false
+	}
+	if !isAncestor(ctx, gateDir, gateBranch, local) {
+		return false
+	}
+	stores := []string{s.workDir(), gateDir}
+	for _, dir := range stores {
+		for _, ref := range []string{custody.RecoveryRef(run.ID), custody.RecoveryLocalRef(run.ID)} {
+			if symbolic, err := git.Run(ctx, dir, "symbolic-ref", "-q", ref); err == nil && symbolic != "" {
+				return false
+			}
+			_, exists, err := git.ExactRefTarget(ctx, dir, ref)
+			if err != nil {
+				return false
+			}
+			if exists {
+				anchored, err := git.Run(ctx, dir, "rev-parse", ref+"^{commit}")
+				if err != nil || anchored != preserved {
+					return false
+				}
+			}
 		}
 	}
 	return true
