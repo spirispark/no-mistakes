@@ -597,6 +597,17 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if !terminalRunStatus(run.Status) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_run_active", "the run that owns this branch is still active; drive it to completion or abort it first; no files or refs were changed")
 	}
+	if !keepLocal && !state.Local.Clean {
+		localAnchor := custody.RecoveryLocalRef(run.ID)
+		if anchoredLocal, err := git.Run(ctx, s.workDir(), "rev-parse", "--verify", localAnchor+"^{commit}"); err == nil && anchoredLocal != run.HeadSHA && state.Local.Head == run.HeadSHA {
+			blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_incomplete_adoption", fmt.Sprintf("the branch reached the preserved pipeline head, but its worktree still differs from that head; the pre-recovery head remains anchored at %s; reconcile the worktree and re-run recovery; custody was not recorded", localAnchor))
+			blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
+			return blocked
+		}
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_dirty", fmt.Sprintf("the invoking worktree is not clean (%s); commit or stash first and re-run the recovery, or use --keep-local to return custody at the current head without moving the worktree; no files or refs were changed", state.Local.Reason))
+		blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
+		return blocked
+	}
 	// A recorded pipeline head that is provably gone can never be verified,
 	// anchored, imported, or adopted, so every path below refuses it forever.
 	// When the branch already contains every head the run recorded, nothing is
@@ -1542,13 +1553,17 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 	}
 	localInGate := objectExists(ctx, gateDir, local)
 	if !localInGate {
+		gateAnchorMatches := gateRecoveryAnchorMatches(ctx, gateDir, run.ID, preserved)
 		if objectExists(ctx, s.workDir(), preserved) {
+			if local == ptr(run.SubmittedHeadSHA) && !gateAnchorMatches {
+				return false
+			}
 			if isAncestor(ctx, s.workDir(), local, preserved) {
 				return true
 			}
 			return preservedContainsLocalWork(ctx, s.workDir(), local, preserved)
 		}
-		return local == ptr(run.SubmittedHeadSHA) && gateRecoveryAnchorMatches(ctx, gateDir, run.ID, preserved)
+		return local == ptr(run.SubmittedHeadSHA) && gateAnchorMatches
 	}
 	if isAncestor(ctx, gateDir, local, preserved) {
 		return true
@@ -1778,7 +1793,8 @@ func CustodyRecoverable(state State) bool {
 }
 
 func localRecoveryEligible(ctx context.Context, wd string, state *State, run *db.Run) bool {
-	return objectExists(ctx, wd, run.HeadSHA) &&
+	return state.Local.Clean &&
+		objectExists(ctx, wd, run.HeadSHA) &&
 		(state.Local.Head == run.HeadSHA || isAncestor(ctx, wd, run.HeadSHA, state.Local.Head))
 }
 

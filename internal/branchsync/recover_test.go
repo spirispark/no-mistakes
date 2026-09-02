@@ -320,6 +320,52 @@ func TestAnchoredRebasedPreservedHeadDoesNotReofferAfterDivergedRecover(t *testi
 	}
 }
 
+func TestLocallyReachablePreservedHeadRefusesDirtyWorktree(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.local, "fetch", "--no-tags", f.gate, "+refs/heads/feature/recover:"+f.anchorRef())
+	mustRun(t, f.local, "merge", "--ff-only", f.preserved)
+	mustWrite(t, filepath.Join(f.local, "dirty.txt"), "wip\n")
+
+	inspected := f.service.InspectCached(f.ctx)
+	if inspected.NextAction != nil && inspected.NextAction.Code == "recover_custody" {
+		t.Fatalf("dirty local status advertised recovery: %#v", inspected)
+	}
+
+	recovered := f.service.Recover(f.ctx, false)
+	if recovered.Recovered || recovered.Safety != "blocked_recover_dirty" {
+		t.Fatalf("dirty local recovery = %#v", recovered)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+		t.Fatalf("dirty refusal moved HEAD to %s", got)
+	}
+	if f.custodyReturned() {
+		t.Fatal("dirty local refusal stamped custody")
+	}
+}
+
+func TestLocalProofWithoutGateAnchorDoesNotAdvertiseRecovery(t *testing.T) {
+	t.Parallel()
+
+	f := newAnchoredRebasedRecoverFixture(t, true)
+	mustRun(t, f.local, "fetch", "--no-tags", f.gate, "+refs/no-mistakes/recover/"+f.run.ID+":"+f.anchorRef())
+	mustRun(t, f.gate, "update-ref", "-d", f.anchorRef())
+
+	inspected := f.service.InspectCached(f.ctx)
+	if inspected.NextAction != nil && inspected.NextAction.Code == "recover_custody" {
+		t.Fatalf("missing-anchor status advertised recovery: %#v", inspected)
+	}
+
+	recovered := f.service.Recover(f.ctx, false)
+	if recovered.Recovered || recovered.Safety != "blocked_recover_preserved_head_missing" {
+		t.Fatalf("missing-anchor recovery = %#v", recovered)
+	}
+	if f.custodyReturned() {
+		t.Fatal("missing-anchor refusal stamped custody")
+	}
+}
+
 func TestAnchoredRebasedPreservedHeadRefusesUnsafeCases(t *testing.T) {
 	t.Parallel()
 
