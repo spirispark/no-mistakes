@@ -294,6 +294,32 @@ func TestAnchoredRebasedPreservedHeadOffersAndRecoversCustody(t *testing.T) {
 	}
 }
 
+func TestAnchoredRebasedPreservedHeadDoesNotReofferAfterDivergedRecover(t *testing.T) {
+	t.Parallel()
+
+	f := newAnchoredRebasedRecoverFixture(t, false)
+	initial := f.service.InspectCached(f.ctx)
+	if initial.Safety != SafetyPipelineOwnedRecoverable || initial.NextAction == nil || initial.NextAction.Code != "recover_custody" {
+		t.Fatalf("initial anchored status = %#v", initial)
+	}
+
+	recovered := f.service.Recover(f.ctx, false)
+	if recovered.Recovered || recovered.Safety != "blocked_recover_diverged" {
+		t.Fatalf("diverged recovery = %#v", recovered)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()+"^{commit}"); got != f.preserved {
+		t.Fatalf("preserved anchor = %s, want %s", got, f.preserved)
+	}
+
+	inspected := f.service.InspectCached(f.ctx)
+	if inspected.NextAction != nil && inspected.NextAction.Code == "recover_custody" {
+		t.Fatalf("diverged status reoffered recovery: %#v", inspected)
+	}
+	if f.custodyReturned() {
+		t.Fatal("diverged refusal stamped custody")
+	}
+}
+
 func TestAnchoredRebasedPreservedHeadRefusesUnsafeCases(t *testing.T) {
 	t.Parallel()
 

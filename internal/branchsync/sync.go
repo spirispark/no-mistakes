@@ -1542,6 +1542,12 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 	}
 	localInGate := objectExists(ctx, gateDir, local)
 	if !localInGate {
+		if objectExists(ctx, s.workDir(), preserved) {
+			if isAncestor(ctx, s.workDir(), local, preserved) {
+				return true
+			}
+			return preservedContainsLocalWork(ctx, s.workDir(), local, preserved)
+		}
 		return local == ptr(run.SubmittedHeadSHA) && gateRecoveryAnchorMatches(ctx, gateDir, run.ID, preserved)
 	}
 	if isAncestor(ctx, gateDir, local, preserved) {
