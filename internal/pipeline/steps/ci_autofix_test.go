@@ -16,6 +16,13 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
+func ciAutoFixFakeClock() (func() time.Time, func()) {
+	now := time.Date(2026, 4, 24, 4, 14, 0, 0, time.UTC)
+	return func() time.Time { return now }, func() {
+		now = now.Add(time.Second)
+	}
+}
+
 func TestCIStep_CIFailureAutoFix(t *testing.T) {
 	t.Parallel()
 	// Set up upstream bare repo for push
@@ -73,9 +80,12 @@ func TestCIStep_CIFailureAutoFix(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
+	ciNow, advanceCI := ciAutoFixFakeClock()
 	step := &CIStep{
+		now: ciNow,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
+			advanceCI()
 			if pollCount == 2 {
 				cancel()
 			}
@@ -133,9 +143,12 @@ func TestCIStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
+	ciNow, advanceCI := ciAutoFixFakeClock()
 	step := &CIStep{
+		now: ciNow,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
+			advanceCI()
 			return nil
 		},
 	}
@@ -331,9 +344,12 @@ func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
+	ciNow, advanceCI := ciAutoFixFakeClock()
 	step := &CIStep{
+		now: ciNow,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
+			advanceCI()
 			return nil
 		},
 	}
@@ -605,9 +621,12 @@ func TestCIStep_CIAutoFixRetriesWhenSomeChecksStayFailing(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
+	ciNow, advanceCI := ciAutoFixFakeClock()
 	step := &CIStep{
+		now: ciNow,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
+			advanceCI()
 			return nil
 		},
 	}
@@ -693,9 +712,12 @@ func TestCIStep_DoesNotRetryOnUnrelatedPendingCheck(t *testing.T) {
 	sctx.Ctx = ctx
 
 	pollCount := 0
+	ciNow, advanceCI := ciAutoFixFakeClock()
 	step := &CIStep{
+		now: ciNow,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
+			advanceCI()
 			if pollCount == 3 {
 				cancel()
 			}
@@ -778,8 +800,11 @@ func TestCIStep_RetriesMergeConflictAfterRerun(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
+	ciNow, advanceCI := ciAutoFixFakeClock()
 	step := &CIStep{
+		now: ciNow,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			advanceCI()
 			return nil
 		},
 	}
@@ -871,9 +896,12 @@ func TestCIStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 	sctx.Ctx = ctx
 
 	pollCount := 0
+	ciNow, advanceCI := ciAutoFixFakeClock()
 	step := &CIStep{
+		now: ciNow,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
+			advanceCI()
 			if pollCount == 2 {
 				cancel()
 			}
@@ -945,9 +973,12 @@ func TestCIStep_AutoFixNoChanges_CountsAsAttempt(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
+	ciNow, advanceCI := ciAutoFixFakeClock()
 	step := &CIStep{
+		now: ciNow,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
+			advanceCI()
 			return nil
 		},
 	}
@@ -1053,9 +1084,12 @@ func TestCIStep_FixMode_NoChanges_CountsAsAttempt(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
+	ciNow, advanceCI := ciAutoFixFakeClock()
 	step := &CIStep{
+		now: ciNow,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
+			advanceCI()
 			return nil
 		},
 	}
@@ -1138,8 +1172,11 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 	sctx.Ctx = ctx
 	sctx.Log = func(s string) {}
 
+	ciNow, advanceCI := ciAutoFixFakeClock()
 	step := &CIStep{
+		now: ciNow,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			advanceCI()
 			cancel()
 			return ctx.Err()
 		},

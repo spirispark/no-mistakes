@@ -163,6 +163,32 @@ func TestLostPipelineHeadWithContainedBranchOffersProvenCustodyReturn(t *testing
 	}
 }
 
+func TestLostPipelineHeadDirtyWorktreeDoesNotAdvertiseRecovery(t *testing.T) {
+	t.Parallel()
+
+	f := newLostHeadFixture(t, types.RunCancelled, false)
+	mustWrite(t, filepath.Join(f.local, "dirty.txt"), "wip\n")
+
+	inspected := f.service.InspectCached(f.ctx)
+	if inspected.Safety != "blocked_recover_dirty" {
+		t.Fatalf("dirty lost-head safety = %s, want blocked_recover_dirty: %#v", inspected.Safety, inspected)
+	}
+	if inspected.NextAction == nil || inspected.NextAction.Code != "inspect_worktree" {
+		t.Fatalf("dirty lost-head next action = %#v", inspected.NextAction)
+	}
+	if inspected.NextAction.Code == "recover_custody" {
+		t.Fatalf("dirty lost-head advertised recovery: %#v", inspected)
+	}
+
+	recovered := f.service.Recover(f.ctx, false)
+	if recovered.Recovered || recovered.Safety != "blocked_recover_dirty" {
+		t.Fatalf("dirty lost-head recovery = %#v", recovered)
+	}
+	if f.custodyReturned() {
+		t.Fatal("dirty lost-head refusal stamped custody")
+	}
+}
+
 // TestRecoverLostPipelineHeadReturnsCustodyWithoutTouchingTheWorktree proves
 // the release is inert: it stamps custody, never moves HEAD, never writes an
 // anchor for a commit that does not exist, and leaves the branch usable for a
