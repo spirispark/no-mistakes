@@ -66,9 +66,9 @@ const (
 	// pipeline head is no longer importable - either it is provably gone
 	// from every object store no-mistakes can read, or it is still reachable
 	// as a commit object but no longer an ancestor of the worktree branch -
-	// while every head the run recorded is already contained in the
-	// operator's branch. There is nothing left to import, so the custody
-	// return is a stamp that moves no file and no ref.
+	// while the worktree is clean and every head the run recorded is already
+	// contained in the operator's branch. There is nothing left to import, so
+	// the custody return is a stamp that moves no file and no ref.
 	SafetyPipelineOwnedHeadLost = "blocked_pipeline_owned_head_lost"
 )
 
@@ -518,8 +518,10 @@ func (s *Service) Apply(ctx context.Context) State {
 // (the terminally verified run head, pinned by its private recovery ref):
 //
 //	relation   worktree  default                        --keep-local
-//	equal      any       anchor locally; return custody same
-//	ahead      any       anchor locally; return custody same
+//	equal      clean     anchor locally; return custody same
+//	equal      dirty     refuse (commit/stash first)    anchor locally; return custody
+//	ahead      clean     anchor locally; return custody same
+//	ahead      dirty     refuse (commit/stash first)    anchor locally; return custody
 //	behind     clean     strict fast-forward to P,      custody at local head;
 //	                     then return custody            gate reset to it (CAS)
 //	behind     dirty     refuse (commit/stash first)    custody at local head;
@@ -550,7 +552,7 @@ func (s *Service) Apply(ctx context.Context) State {
 // Fail-safe rules, in the same spirit as Refresh/Apply:
 //   - An active run always refuses: only terminal runs are recoverable.
 //   - The preserved commits must be provably safe before custody moves: when
-//     already reachable from the local branch (equal/ahead), recovery pins the
+//     already reachable from a clean local branch (equal/ahead), recovery pins the
 //     private anchor ref refs/no-mistakes/recover/<runID> locally without
 //     requiring gate access, but rejects a conflicting recovery ref when the
 //     gate is available; otherwise the preserved head is verified through the
@@ -1645,8 +1647,9 @@ func (s *Service) recoveryLocallyDiverged(ctx context.Context, state *State, run
 //
 // Release is allowed only on positive proof, and every clause fails closed:
 //   - Absence is read through git.ObjectMissing in BOTH stores no-mistakes
-//     controls, so an unreadable, unconfigured, or absent gate is undetermined
-//     rather than evidence. A malformed object id is never "absent".
+//     controls while the worktree is clean, so an unreadable, unconfigured, or
+//     absent gate is undetermined rather than evidence. A malformed object id
+//     is never "absent".
 //   - Any surviving run-specific recovery ref, in either store, is
 //     reconciliation material that could still name the head, so it refuses.
 //   - Every head this run is recorded to have received or delivered, plus
