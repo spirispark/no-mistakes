@@ -31,7 +31,9 @@ func newSyncCmd() *cobra.Command {
 			"--recover returns custody of a branch whose run went terminal with unpublished\n" +
 			"pipeline commits: it anchors the preserved head, then either fast-forwards a\n" +
 			"clean behind worktree or adopts a diverged preserved head only when proven to\n" +
-			"carry every local change. Unproven divergence refuses. When that head is no\n" +
+			"carry every local change, or when the clean branch still equals the submitted\n" +
+			"head and reviewed terminal/gate evidence all name the preserved head.\n" +
+			"Unproven divergence refuses. When that head is no\n" +
 			"longer importable - either provably gone from the worktree and the gate, or\n" +
 			"still reachable as a commit but no longer an ancestor of this branch - and\n" +
 			"this branch already contains every head the run recorded, it returns custody\n" +

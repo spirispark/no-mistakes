@@ -460,6 +460,301 @@ func TestAnchoredRebasedPreservedHeadRefusesUnsafeCases(t *testing.T) {
 	}
 }
 
+// reviewedSubmittedHeadFixture reproduces the live PR #42 recovery topology
+// from run 01M1HS8SJBNKEXN39C7KPKA86Q:
+//   - the clean invoking branch remains exactly the submitted head;
+//   - the local gate also has that submitted commit, so PR #5's missing-local-
+//     in-gate fixture does not exercise this branch;
+//   - the terminal pipeline head is reviewed, terminal-verified, and anchored
+//     both as the gate branch and refs/no-mistakes/recover/<run>;
+//   - the submitted head and accepted head are diverged, and the older
+//     content-merge containment proof returns false because the reviewed
+//     pipeline head superseded lines from the submitted head.
+func reviewedSubmittedHeadFixture(t *testing.T) *recoverFixture {
+	t.Helper()
+	ctx := context.Background()
+	root := t.TempDir()
+	remote := filepath.Join(root, "upstream.git")
+	mustRun(t, root, "init", "--bare", remote)
+
+	local := filepath.Join(root, "operator")
+	mustRun(t, root, "init", "-b", "main", local)
+	configureIdentity(t, local)
+	mustWrite(t, filepath.Join(local, "script.sh"), "base\n")
+	mustRun(t, local, "add", "script.sh")
+	mustRun(t, local, "commit", "-m", "base")
+	base := mustRun(t, local, "rev-parse", "HEAD")
+	mustRun(t, local, "checkout", "-b", "feature/reviewed-submitted")
+	mustWrite(t, filepath.Join(local, "script.sh"), "base\nfeature-v1\n")
+	mustRun(t, local, "commit", "-am", "feature")
+	firstFeature := mustRun(t, local, "rev-parse", "HEAD")
+
+	gate := filepath.Join(root, "gate.git")
+	mustRun(t, root, "init", "--bare", gate)
+	mustRun(t, local, "push", gate, "refs/heads/main:refs/heads/main", firstFeature+":refs/heads/feature/reviewed-submitted")
+	mustRun(t, local, "push", remote, firstFeature+":refs/heads/feature/reviewed-submitted")
+
+	// An earlier pipeline line exists in the gate and gets preserved into the
+	// operator branch by a merge commit, matching the live branch's preserved
+	// prior no-mistakes commits.
+	oldPipeline := filepath.Join(root, "old-pipeline")
+	mustRun(t, root, "-c", "core.autocrlf=false", "clone", gate, oldPipeline)
+	configureIdentity(t, oldPipeline)
+	mustRun(t, oldPipeline, "checkout", "feature/reviewed-submitted")
+	mustWrite(t, filepath.Join(oldPipeline, "script.sh"), "base\nfeature-v1\nold-pipeline\n")
+	mustRun(t, oldPipeline, "commit", "-am", "old pipeline fix")
+	oldPreserved := mustRun(t, oldPipeline, "rev-parse", "HEAD")
+	mustRun(t, oldPipeline, "push", "origin", oldPreserved+":refs/heads/feature/reviewed-submitted")
+
+	mustRun(t, local, "fetch", gate, "refs/heads/feature/reviewed-submitted")
+	mustRun(t, local, "merge", "--no-ff", "-m", "merge old pipeline", "FETCH_HEAD")
+
+	// Main advances independently. The operator merges it before starting the
+	// live failed run, producing a submitted merge commit that the new pipeline
+	// later rewrites rather than preserving by ancestry.
+	mustRun(t, local, "checkout", "main")
+	mustWrite(t, filepath.Join(local, "main.txt"), "main advance\n")
+	mustRun(t, local, "add", "main.txt")
+	mustRun(t, local, "commit", "-m", "main advance")
+	advancedMain := mustRun(t, local, "rev-parse", "HEAD")
+	mustRun(t, local, "checkout", "feature/reviewed-submitted")
+	mustRun(t, local, "merge", "--no-ff", "-m", "merge main", advancedMain)
+	submitted := mustRun(t, local, "rev-parse", "HEAD")
+	mustRun(t, local, "push", "-f", gate, submitted+":refs/heads/feature/reviewed-submitted")
+
+	// The accepted run head is the reviewed replacement for the submitted
+	// branch. It is rooted on advanced main and deliberately supersedes the
+	// submitted line, so preservedContainsLocalWork must fail.
+	pipeline := filepath.Join(root, "pipeline")
+	mustRun(t, root, "-c", "core.autocrlf=false", "clone", gate, pipeline)
+	configureIdentity(t, pipeline)
+	mustRun(t, pipeline, "checkout", "-B", "feature/reviewed-submitted", advancedMain)
+	mustWrite(t, filepath.Join(pipeline, "script.sh"), "base\nfeature-v2-reviewed\n")
+	mustRun(t, pipeline, "add", "script.sh")
+	mustRun(t, pipeline, "commit", "-m", "reviewed replacement")
+	mustWrite(t, filepath.Join(pipeline, "fix.txt"), "review fix\n")
+	mustRun(t, pipeline, "add", "fix.txt")
+	mustRun(t, pipeline, "commit", "-m", "no-mistakes(review): fix")
+	preserved := mustRun(t, pipeline, "rev-parse", "HEAD")
+	mustRun(t, pipeline, "push", "-f", "origin", preserved+":refs/heads/feature/reviewed-submitted")
+
+	database, err := db.Open(filepath.Join(root, "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	repo, err := database.InsertRepo(local, remote, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature/reviewed-submitted", submitted, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunReviewApprovedHeadSHA(run.ID, preserved); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatusWithVerifiedHead(run.ID, types.RunFailed, preserved); err != nil {
+		t.Fatal(err)
+	}
+	run, _ = database.GetRun(run.ID)
+	mustRun(t, pipeline, "push", "origin", preserved+":refs/no-mistakes/recover/"+run.ID)
+
+	if got := mustRun(t, local, "rev-parse", "HEAD"); got != submitted {
+		t.Fatalf("operator HEAD = %s, want submitted %s", got, submitted)
+	}
+	if got := mustRun(t, gate, "rev-parse", "refs/heads/feature/reviewed-submitted^{commit}"); got != preserved {
+		t.Fatalf("gate branch = %s, want preserved %s", got, preserved)
+	}
+	if got := mustRun(t, gate, "cat-file", "-t", submitted); got != "commit" {
+		t.Fatalf("submitted head must exist in gate for the live topology, got %s", got)
+	}
+	if _, err := exec.Command("git", "-C", local, "cat-file", "-e", preserved+"^{commit}").CombinedOutput(); err == nil {
+		t.Fatalf("preserved head %s unexpectedly exists in invoking worktree", preserved)
+	}
+	if preservedContainsLocalWork(ctx, gate, submitted, preserved) {
+		t.Fatal("fixture must fail the old content-containment proof")
+	}
+
+	return &recoverFixture{
+		t: t, ctx: ctx, db: database, repo: repo, run: run,
+		service: &Service{DB: database, Repo: repo, WorkDir: local, GateDir: gate},
+		local:   local, gate: gate, remote: remote,
+		base: base, submitted: submitted, preserved: preserved,
+	}
+}
+
+func TestReviewedSubmittedHeadWithGateSubmittedObjectOffersAndRecoversCustody(t *testing.T) {
+	t.Parallel()
+
+	f := reviewedSubmittedHeadFixture(t)
+	state := f.service.InspectCached(f.ctx)
+	if state.State != StatePipelineOwned || state.Safety != SafetyPipelineOwnedRecoverable {
+		t.Fatalf("reviewed submitted-head status = %#v", state)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "recover_custody" || state.NextAction.Command != "no-mistakes axi sync --recover" {
+		t.Fatalf("reviewed submitted-head next action = %#v", state.NextAction)
+	}
+
+	recovered := f.service.Recover(f.ctx, false)
+	if !recovered.Recovered || !recovered.Changed {
+		t.Fatalf("reviewed submitted-head recovery = %#v", recovered)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+		t.Fatalf("HEAD = %s, want preserved %s", got, f.preserved)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()+"^{commit}"); got != f.preserved {
+		t.Fatalf("preserved anchor = %s, want %s", got, f.preserved)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.localAnchorRef()+"^{commit}"); got != f.submitted {
+		t.Fatalf("pre-recovery local anchor = %s, want submitted %s", got, f.submitted)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "script.sh")); got != "base\nfeature-v2-reviewed\n" {
+		t.Fatalf("adopted reviewed content = %q", got)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("custody not stamped")
+	}
+}
+
+func TestReviewedSubmittedHeadRecoveryRefusesUnprovenCases(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name              string
+		arrange           func(t *testing.T, f *recoverFixture)
+		wantInspectSafety string
+		wantRecoverSafety string
+	}{
+		{
+			name:              "dirty invoking branch",
+			wantInspectSafety: "blocked_recover_dirty",
+			wantRecoverSafety: "blocked_recover_dirty",
+			arrange: func(t *testing.T, f *recoverFixture) {
+				mustWrite(t, filepath.Join(f.local, "dirty.txt"), "wip\n")
+			},
+		},
+		{
+			name:              "run is still active",
+			wantInspectSafety: "blocked_pipeline_owned",
+			wantRecoverSafety: "blocked_recover_run_active",
+			arrange: func(t *testing.T, f *recoverFixture) {
+				if err := f.db.UpdateRunStatus(f.run.ID, types.RunRunning); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name:              "run already has pushed provenance",
+			wantInspectSafety: "blocked_recover_preserved_head_missing",
+			wantRecoverSafety: "blocked_recover_diverged",
+			arrange: func(t *testing.T, f *recoverFixture) {
+				if err := f.db.UpdateRunPushBinding(f.run.ID, db.PushBinding{
+					HeadSHA: f.submitted, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(f.remote), Ref: "refs/heads/feature/reviewed-submitted",
+				}); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name:              "review did not approve terminal head",
+			wantInspectSafety: "blocked_recover_preserved_head_missing",
+			wantRecoverSafety: "blocked_recover_diverged",
+			arrange: func(t *testing.T, f *recoverFixture) {
+				if err := f.db.UpdateRunReviewApprovedHeadSHA(f.run.ID, f.submitted); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name:              "submitted head no longer checked out",
+			wantInspectSafety: "blocked_recover_preserved_head_missing",
+			wantRecoverSafety: "blocked_recover_diverged",
+			arrange: func(t *testing.T, f *recoverFixture) {
+				mustWrite(t, filepath.Join(f.local, "local.txt"), "follow-up\n")
+				mustRun(t, f.local, "add", "local.txt")
+				mustRun(t, f.local, "commit", "-m", "local follow-up")
+			},
+		},
+		{
+			name:              "gate branch no longer names reviewed head",
+			wantInspectSafety: "blocked_recover_preserved_head_missing",
+			wantRecoverSafety: "blocked_recover_diverged",
+			arrange: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.gate, "update-ref", "refs/heads/feature/reviewed-submitted", f.submitted)
+			},
+		},
+		{
+			name:              "gate recovery ref missing",
+			wantInspectSafety: "blocked_recover_preserved_head_missing",
+			wantRecoverSafety: "blocked_recover_preserved_head_missing",
+			arrange: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.gate, "update-ref", "-d", f.anchorRef())
+			},
+		},
+		{
+			name:              "gate recovery ref conflicts",
+			wantInspectSafety: "blocked_recover_preserved_head_missing",
+			wantRecoverSafety: "blocked_recover_anchor_mismatch",
+			arrange: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.gate, "update-ref", f.anchorRef(), f.submitted)
+			},
+		},
+		{
+			name:              "different branch",
+			wantInspectSafety: "blocked_wrong_branch",
+			wantRecoverSafety: "blocked_recover_not_applicable",
+			arrange: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.local, "checkout", "-b", "feature/other", f.submitted)
+			},
+		},
+		{
+			name:              "different registered worktree",
+			wantInspectSafety: "blocked_ambiguous_context",
+			wantRecoverSafety: "blocked_recover_not_applicable",
+			arrange: func(t *testing.T, f *recoverFixture) {
+				other := filepath.Join(t.TempDir(), "other")
+				mustRun(t, filepath.Dir(other), "init", "-b", "main", other)
+				configureIdentity(t, other)
+				mustWrite(t, filepath.Join(other, "README.md"), "other\n")
+				mustRun(t, other, "add", "README.md")
+				mustRun(t, other, "commit", "-m", "other")
+				f.service.WorkDir = other
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := reviewedSubmittedHeadFixture(t)
+			tc.arrange(t, f)
+			before := mustRun(t, f.local, "rev-parse", "HEAD")
+
+			inspected := f.service.InspectCached(f.ctx)
+			if inspected.Safety != tc.wantInspectSafety {
+				t.Fatalf("inspect safety = %s, want %s: %#v", inspected.Safety, tc.wantInspectSafety, inspected)
+			}
+			if inspected.NextAction != nil && inspected.NextAction.Code == "recover_custody" {
+				t.Fatalf("unproven status advertised recovery: %#v", inspected)
+			}
+			recovered := f.service.Recover(f.ctx, false)
+			if recovered.Recovered {
+				t.Fatalf("unproven recovery succeeded: %#v", recovered)
+			}
+			if recovered.Safety != tc.wantRecoverSafety {
+				t.Fatalf("recover safety = %s, want %s: %#v", recovered.Safety, tc.wantRecoverSafety, recovered)
+			}
+			if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != before {
+				t.Fatalf("refusal moved HEAD from %s to %s", before, got)
+			}
+			if f.custodyReturned() {
+				t.Fatal("refusal stamped custody")
+			}
+		})
+	}
+}
+
 // TestTerminalPrePushRunSurfacesGuardedCustodyRecovery is the regression test
 // for the stranded state itself (dogfood run 01KXN8YJ6DWF8XPP582DWQC3HV): a
 // terminal run at the pre_push phase must not be a dead end. The state stays

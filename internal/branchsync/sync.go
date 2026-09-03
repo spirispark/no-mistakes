@@ -530,6 +530,11 @@ func (s *Service) Apply(ctx context.Context) State {
 //	P contains           head, then move to P with      gate reset to it (CAS)
 //	all local            fail-closed ops; return custody
 //	work
+//	diverged,  clean     same, when local still equals   custody at local head;
+//	reviewed             the submitted head and review,  gate reset to it (CAS)
+//	submitted            terminal-head, gate branch, and
+//	head                 gate recovery-ref evidence all
+//	                     name P
 //	diverged,  dirty     refuse (commit/stash first)    custody at local head;
 //	P contains                                          gate reset to it (CAS)
 //	all local
@@ -548,6 +553,11 @@ func (s *Service) Apply(ctx context.Context) State {
 // rewrote the operator's lines - falls through to the plain diverged refusal.
 // No-data-loss outranks convenience here: when nothing can distinguish a
 // deliberate pipeline fix from a dropped change, the operator decides.
+// A second, narrower diverged adoption is allowed when the invoking branch is
+// still exactly the run's submitted head and the reviewed head, terminal
+// verified head, local gate branch, and exact run recovery ref all agree on P:
+// there is no post-submission local work to protect, and the submitted head is
+// anchored before the branch moves.
 //
 // Fail-safe rules, in the same spirit as Refresh/Apply:
 //   - An active run always refuses: only terminal runs are recoverable.
@@ -560,13 +570,15 @@ func (s *Service) Apply(ctx context.Context) State {
 //     heads that still exist as unreferenced gate objects are anchored before
 //     recovery continues. The branch ref may independently lag or advance.
 //   - The only possible worktree mutation is a guarded move of a clean checked-out
-//     branch: a strict fast-forward, or an anchored move to a proven-containing
-//     head performed by Git operations that refuse on their own rather than by a
-//     preceding observation (see recoverAdoptPreserved). When the operator explicitly keeps a behind or diverged local
-//     head instead of taking P, --keep-local never touches the worktree and moves
-//     the gate branch to the kept head with an atomic compare-and-swap, so a
-//     concurrent gate push wins and recovery refuses. An independently moved
-//     gate head is pinned first so that CAS never discards it.
+//     branch: a strict fast-forward, or an anchored move to a
+//     proven-containing or reviewed submitted-head replacement performed by
+//     Git operations that refuse on their own rather than by a preceding
+//     observation (see recoverAdoptPreserved). When the operator explicitly
+//     keeps a behind or diverged local head instead of taking P, --keep-local
+//     never touches the worktree and moves the gate branch to the kept head
+//     with an atomic compare-and-swap, so a concurrent gate push wins and
+//     recovery refuses. An independently moved gate head is pinned first so
+//     that CAS never discards it.
 //   - Anything unverifiable (missing recorded head, missing gate where required,
 //     failed anchor write or fetch, changed assumptions) refuses with a reason.
 //
@@ -610,6 +622,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
 		return blocked
 	}
+	reviewedSubmittedHeadProof := s.reviewedSubmittedHeadRecovery(ctx, &state, run)
 	// A recorded pipeline head that is provably gone can never be verified,
 	// anchored, imported, or adopted, so every path below refuses it forever.
 	// When the branch already contains every head the run recorded, nothing is
@@ -700,6 +713,9 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		gateAnchorAvailable = true
 	}
 	if !gateAnchorAvailable {
+		if s.reviewedSubmittedHeadGateBranch(ctx, &state, run) {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserved_head_missing", fmt.Sprintf("the reviewed terminal pipeline head %s is present as the gate branch, but the matching run recovery ref %s is missing; inspect the recorded and live heads before returning custody; no files or refs were changed", preserved, gateAnchor))
+		}
 		if !objectExists(ctx, gateDir, preserved) {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserved_head_missing", fmt.Sprintf("the recorded pipeline head %s is missing from the local gate; inspect the recorded and live heads before returning custody; no files or refs were changed", preserved))
 		}
@@ -752,6 +768,15 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			}
 			return s.recoverKeepLocal(ctx, run, state, gateHead)
 		}
+		if reviewedSubmittedHeadProof {
+			if !state.Local.Clean {
+				state.Relation = RelationDiverged
+				blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_dirty", fmt.Sprintf("the invoking worktree is not clean (%s); commit or stash first and re-run the recovery, or use --keep-local to return custody at the current head without moving the worktree; no files or refs were changed", state.Local.Reason))
+				blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
+				return blocked
+			}
+			return s.recoverAdoptPreserved(ctx, run, state, preserved, adoptionReviewedSubmittedHead)
+		}
 		if preservedContainsLocalWork(ctx, wd, local, preserved) {
 			if !state.Local.Clean {
 				state.Relation = RelationDiverged
@@ -759,7 +784,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 				blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
 				return blocked
 			}
-			return s.recoverAdoptPreserved(ctx, run, state, preserved)
+			return s.recoverAdoptPreserved(ctx, run, state, preserved, adoptionContainsLocalWork)
 		}
 		state.Relation = RelationDiverged
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_diverged", fmt.Sprintf("the local branch and the preserved pipeline head have diverged; the preserved commits are anchored at %s - reconcile manually and re-run the recovery, run `no-mistakes rerun` to resume validating the preserved head, or use --keep-local to keep the current head; no files or refs were changed", anchorRef))
@@ -892,10 +917,12 @@ func preservedContainsLocalWork(ctx context.Context, dir, local, preserved strin
 	return mergeTreePreservesFinalHead(ctx, dir, base, local, preserved)
 }
 
-// recoverAdoptPreserved returns custody for a preserved pipeline head that
-// already carries every local change. The local commits are represented in the
-// preserved head, but their exact SHAs are not reachable from it, so the move is
-// not a fast-forward and the pre-recovery local head is anchored first.
+// recoverAdoptPreserved returns custody for a preserved pipeline head that is
+// safe to adopt through one of the explicit diverged-head proofs. Either the
+// local commits are represented in the preserved head but their exact SHAs are
+// not reachable from it, or the local branch is still the submitted head and a
+// reviewed terminal/gate proof names the replacement head. In both cases the
+// move is not a fast-forward and the pre-recovery local head is anchored first.
 //
 // The move itself must fail closed. An observation of branch, HEAD, and
 // cleanliness followed by an unconditional `reset --hard` is check-then-act:
@@ -915,10 +942,17 @@ func preservedContainsLocalWork(ctx context.Context, dir, local, preserved strin
 //
 // A crash between the two leaves the branch at the preserved head with the
 // working tree still holding the pre-recovery content, which reads as ordinary
-// uncommitted changes and loses nothing: containment was proven before the move
+// uncommitted changes and loses nothing: adoption was proven before the move
 // and the pre-recovery head stays anchored. Custody is stamped only after the
 // whole move is verified.
-func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state State, preserved string) State {
+type recoveryAdoptionProof int
+
+const (
+	adoptionContainsLocalWork recoveryAdoptionProof = iota
+	adoptionReviewedSubmittedHead
+)
+
+func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state State, preserved string, proof recoveryAdoptionProof) State {
 	if s.beforeRecoverWorktreeMove != nil {
 		s.beforeRecoverWorktreeMove()
 	}
@@ -929,10 +963,17 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	if branchErr != nil || branch != state.Local.Branch || headErr != nil || head != state.Local.Head || !clean {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch or worktree changed while custody was being returned; no files or refs were changed")
 	}
-	// The containment proof runs before the anchor and the move so that no
-	// slow work sits between the last guard and the mutation.
-	if !preservedContainsLocalWork(ctx, wd, head, preserved) {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the containment proof changed while custody was being returned; no files or refs were changed")
+	// The adoption proof runs before the anchor and the move so that no slow
+	// work sits between the last guard and the mutation.
+	switch proof {
+	case adoptionReviewedSubmittedHead:
+		if !s.reviewedSubmittedHeadRecovery(ctx, &state, run) {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the reviewed submitted-head proof changed while custody was being returned; no files or refs were changed")
+		}
+	default:
+		if !preservedContainsLocalWork(ctx, wd, head, preserved) {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the containment proof changed while custody was being returned; no files or refs were changed")
+		}
 	}
 	localAnchor := recoverLocalAnchorRef(run.ID)
 	// Create-only: an empty old value requires the ref not to exist. A resumed
@@ -1570,6 +1611,9 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 	if !state.Local.Clean {
 		return false
 	}
+	if s.reviewedSubmittedHeadRecovery(ctx, state, run) {
+		return true
+	}
 	localInGate := objectExists(ctx, gateDir, local)
 	if !localInGate {
 		gateAnchorMatches := gateRecoveryAnchorMatches(ctx, gateDir, run.ID, preserved)
@@ -1588,6 +1632,53 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 		return true
 	}
 	return preservedContainsLocalWork(ctx, gateDir, local, preserved)
+}
+
+func (s *Service) reviewedSubmittedHeadGateBranch(ctx context.Context, state *State, run *db.Run) bool {
+	if state == nil || run == nil || run.CustodyReturnedAt != nil || !terminalRunStatus(run.Status) || run.TerminalHeadVerifiedAt == nil {
+		return false
+	}
+	if run.LastPushedSHA != nil || run.ReviewApprovedHeadSHA == nil {
+		return false
+	}
+	local := strings.TrimSpace(state.Local.Head)
+	submitted := strings.TrimSpace(ptr(run.SubmittedHeadSHA))
+	preserved := strings.TrimSpace(run.HeadSHA)
+	reviewed := strings.TrimSpace(ptr(run.ReviewApprovedHeadSHA))
+	if local == "" || submitted == "" || preserved == "" || local != submitted || preserved == local || reviewed != preserved {
+		return false
+	}
+	if strings.TrimSpace(state.Local.Branch) == "" || state.Local.Branch != run.Branch || !state.Local.Clean {
+		return false
+	}
+	gateDir := strings.TrimSpace(s.GateDir)
+	if gateDir == "" {
+		return false
+	}
+	if _, err := os.Stat(gateDir); err != nil {
+		return false
+	}
+	gateBranch, readable := gateBranchHead(ctx, gateDir, state.Local.Branch)
+	return readable && gateBranch == preserved
+}
+
+// reviewedSubmittedHeadRecovery proves the live guarded-recovery shape where
+// the invoking branch is still exactly the run's submitted head, while the
+// terminal pipeline head was rewritten by the run itself and cannot be proven
+// equivalent through a three-way content merge. The replacement is allowed
+// only when the reviewed head, terminal verified head, local gate branch, and
+// exact run recovery ref all name the same commit.
+func (s *Service) reviewedSubmittedHeadRecovery(ctx context.Context, state *State, run *db.Run) bool {
+	gateDir := strings.TrimSpace(s.GateDir)
+	if !s.reviewedSubmittedHeadGateBranch(ctx, state, run) {
+		return false
+	}
+	preserved := strings.TrimSpace(run.HeadSHA)
+	if !gateRecoveryAnchorMatches(ctx, gateDir, run.ID, preserved) {
+		return false
+	}
+	gateBranch, readable := gateBranchHead(ctx, gateDir, state.Local.Branch)
+	return readable && gateBranch == preserved
 }
 
 func (s *Service) recoveryLocallyDiverged(ctx context.Context, state *State, run *db.Run) bool {
