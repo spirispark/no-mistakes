@@ -312,6 +312,12 @@ func TestAnchoredRebasedPreservedHeadDoesNotReofferAfterDivergedRecover(t *testi
 	}
 
 	inspected := f.service.InspectCached(f.ctx)
+	if inspected.Safety != "blocked_recover_diverged" || inspected.Relation != RelationDiverged {
+		t.Fatalf("diverged status = %s/%s, want blocked_recover_diverged/%s: %#v", inspected.Safety, inspected.Relation, RelationDiverged, inspected)
+	}
+	if inspected.NextAction == nil || inspected.NextAction.Code != "inspect_and_reconcile_manually" {
+		t.Fatalf("diverged status next action = %#v", inspected.NextAction)
+	}
 	if inspected.NextAction != nil && inspected.NextAction.Code == "recover_custody" {
 		t.Fatalf("diverged status reoffered recovery: %#v", inspected)
 	}
@@ -379,7 +385,7 @@ func TestAnchoredRebasedPreservedHeadRefusesUnsafeCases(t *testing.T) {
 		{
 			name:              "dirty worktree",
 			carries:           true,
-			wantInspectSafety: "blocked_recover_preserved_head_missing",
+			wantInspectSafety: "blocked_recover_dirty",
 			wantRecoverSafety: "blocked_recover_dirty",
 			arrange: func(t *testing.T, f *recoverFixture) {
 				mustWrite(t, filepath.Join(f.local, "dirty.txt"), "wip\n")

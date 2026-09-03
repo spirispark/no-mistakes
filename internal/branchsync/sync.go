@@ -1476,6 +1476,12 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	state.Pipeline.Phase = "pre_push"
 	state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, run.HeadSHA)
 	if terminalRunStatus(run.Status) {
+		if !state.Local.Clean {
+			state.Safety = "blocked_recover_dirty"
+			state.Error = fmt.Sprintf("the invoking worktree is not clean (%s); commit or stash first and re-run the recovery, or use --keep-local to return custody at the current head without moving the worktree", state.Local.Reason)
+			state.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
+			return
+		}
 		if !s.recoverySourceAvailable(ctx, state, run) {
 			if s.lostPipelineHeadReleasable(ctx, state, run) {
 				state.Safety = SafetyPipelineOwnedHeadLost
@@ -1487,6 +1493,17 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 				state.Safety = SafetyPipelineOwnedHeadLost
 				state.Error = "the run finished " + string(run.Status) + " and its recorded pipeline head " + run.HeadSHA + " is no longer reachable as an ancestor of this branch, but every head this run recorded is already contained in this branch; returning custody strands nothing and changes no file or ref"
 				state.NextAction = &NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover"}
+				return
+			}
+			if s.recoveryLocallyDiverged(ctx, state, run) {
+				target := run.HeadSHA
+				if anchored, err := git.Run(ctx, s.workDir(), "rev-parse", custody.RecoveryRef(run.ID)+"^{commit}"); err == nil && anchored == run.HeadSHA {
+					target = custody.RecoveryRef(run.ID)
+				}
+				state.Safety = "blocked_recover_diverged"
+				state.Relation = RelationDiverged
+				state.Error = "the run finished " + string(run.Status) + " and the preserved pipeline head is available locally but diverged from this branch; reconcile manually before returning custody"
+				state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "git log --oneline --left-right HEAD..." + target}
 				return
 			}
 			state.Safety = "blocked_recover_preserved_head_missing"
@@ -1571,6 +1588,43 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 	return preservedContainsLocalWork(ctx, gateDir, local, preserved)
 }
 
+func (s *Service) recoveryLocallyDiverged(ctx context.Context, state *State, run *db.Run) bool {
+	if state == nil || run == nil || !state.Local.Clean {
+		return false
+	}
+	local := strings.TrimSpace(state.Local.Head)
+	preserved := strings.TrimSpace(run.HeadSHA)
+	if local == "" || preserved == "" || local == preserved || !objectExists(ctx, s.workDir(), preserved) {
+		return false
+	}
+	compatible, err := recoveryAnchorCompatible(ctx, s.workDir(), run.ID, preserved)
+	if err != nil || !compatible {
+		return false
+	}
+	if isAncestor(ctx, s.workDir(), local, preserved) || isAncestor(ctx, s.workDir(), preserved, local) {
+		return false
+	}
+	if preservedContainsLocalWork(ctx, s.workDir(), local, preserved) {
+		return false
+	}
+	gateDir := strings.TrimSpace(s.GateDir)
+	if gateDir == "" {
+		return false
+	}
+	if _, err := os.Stat(gateDir); err != nil {
+		return false
+	}
+	gateAnchorMatches := gateRecoveryAnchorMatches(ctx, gateDir, run.ID, preserved)
+	if local == ptr(run.SubmittedHeadSHA) && !objectExists(ctx, gateDir, local) && !gateAnchorMatches {
+		return false
+	}
+	if !gateAnchorMatches && !objectExists(ctx, gateDir, preserved) {
+		return false
+	}
+	compatible, err = recoveryAnchorCompatible(ctx, gateDir, run.ID, preserved)
+	return err == nil && compatible
+}
+
 // lostPipelineHeadReleasable reports whether a terminal run's recorded
 // pipeline head is PROVABLY gone rather than merely unreadable, and whether
 // releasing custody at that point can strand no work.
@@ -1604,6 +1658,9 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 // anchor, fast-forward to, or adopt.
 func (s *Service) lostPipelineHeadReleasable(ctx context.Context, state *State, run *db.Run) bool {
 	if state == nil || run == nil || run.CustodyReturnedAt != nil || !terminalRunStatus(run.Status) {
+		return false
+	}
+	if !state.Local.Clean {
 		return false
 	}
 	preserved := strings.TrimSpace(run.HeadSHA)
