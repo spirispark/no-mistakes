@@ -229,9 +229,9 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 			fmt.Fprintln(cmd.OutOrStdout(), "  possible worktree change is a fast-forward of this clean behind branch, or")
 			fmt.Fprintln(cmd.OutOrStdout(), "  adoption of a diverged preserved head proven to carry every local change,")
 			fmt.Fprintln(cmd.OutOrStdout(), "  or adoption of an exact reviewed terminal head when the clean branch still")
-			fmt.Fprintln(cmd.OutOrStdout(), "  equals the submitted head and reviewed, gate-branch, and recovery-ref")
-			fmt.Fprintln(cmd.OutOrStdout(), "  evidence all name that head; unproven divergence refuses, and --keep-local")
-			fmt.Fprintln(cmd.OutOrStdout(), "  keeps the current head.")
+			fmt.Fprintln(cmd.OutOrStdout(), "  equals the submitted head and review-approved, terminal-head, gate-branch,")
+			fmt.Fprintln(cmd.OutOrStdout(), "  and exact recovery-ref evidence all name that head; unproven divergence")
+			fmt.Fprintln(cmd.OutOrStdout(), "  refuses, and --keep-local keeps the current head.")
 		}
 		fmt.Fprint(cmd.OutOrStdout(), "  Return custody of this branch? [y/N] ")
 		line, readErr := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')

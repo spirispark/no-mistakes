@@ -127,12 +127,14 @@ func renderRecoverConfirmation(state branchsync.State, width int) string {
 		return renderBoxWithFooter("Confirm custody recovery", b.String(), width, "u/enter recover  ·  esc cancel")
 	}
 	fmt.Fprintf(&b, "The run ended %s without publishing its pipeline commits. Recovery returns\n", state.Pipeline.Status)
-	fmt.Fprintf(&b, "custody by fast-forwarding a clean behind worktree, or by adopting a diverged\n")
-	fmt.Fprintf(&b, "preserved head only when it is proven to carry every local change.\n\n")
+	fmt.Fprintf(&b, "custody by fast-forwarding a clean behind worktree, by adopting a diverged\n")
+	fmt.Fprintf(&b, "preserved head proven to carry every local change, or by adopting an exact\n")
+	fmt.Fprintf(&b, "review-approved terminal head when this clean branch still equals the\n")
+	fmt.Fprintf(&b, "submitted head and the gate-branch plus exact recovery-ref evidence matches.\n\n")
 	fmt.Fprintf(&b, "Local branch:   %s\n", state.Local.Branch)
 	fmt.Fprintf(&b, "Local HEAD:     %s\n", state.Local.Head)
 	fmt.Fprintf(&b, "Preserved HEAD: %s\n\n", state.Pipeline.CurrentHead)
-	b.WriteString("Dirty worktrees and divergence that cannot be proven contained refuse without changes; `no-mistakes sync --recover --keep-local` keeps the current head instead. `no-mistakes rerun` resumes validation.")
+	b.WriteString("Dirty worktrees and unproven divergence refuse without changes; `no-mistakes sync --recover --keep-local` keeps the current head instead. `no-mistakes rerun` resumes validation.")
 	return renderBoxWithFooter("Confirm custody recovery", b.String(), width, "u/enter recover  ·  esc cancel")
 }
 
