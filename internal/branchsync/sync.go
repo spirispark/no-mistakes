@@ -1776,7 +1776,7 @@ func (s *Service) lostPipelineHeadReleasable(ctx context.Context, state *State, 
 	}
 	for _, dir := range stores {
 		for _, ref := range []string{custody.RecoveryRef(run.ID), custody.RecoveryLocalRef(run.ID), custody.RecoveryGateRef(run.ID)} {
-			if _, exists, err := git.ExactRefTarget(ctx, dir, ref); err != nil || exists {
+			if !recoveryRefAbsent(ctx, dir, ref) {
 				return false
 			}
 		}
@@ -1873,18 +1873,9 @@ func (s *Service) worktreeBranchAlreadyHoldsPipeline(ctx context.Context, state 
 	stores := []string{s.workDir(), gateDir}
 	for _, dir := range stores {
 		for _, ref := range []string{custody.RecoveryRef(run.ID), custody.RecoveryLocalRef(run.ID)} {
-			if symbolic, err := git.Run(ctx, dir, "symbolic-ref", "-q", ref); err == nil && symbolic != "" {
+			compatible, err := recoveryRefCompatible(ctx, dir, ref, preserved)
+			if err != nil || !compatible {
 				return false
-			}
-			_, exists, err := git.ExactRefTarget(ctx, dir, ref)
-			if err != nil {
-				return false
-			}
-			if exists {
-				anchored, err := git.Run(ctx, dir, "rev-parse", ref+"^{commit}")
-				if err != nil || anchored != preserved {
-					return false
-				}
 			}
 		}
 	}
@@ -1899,18 +1890,26 @@ func gateBranchHead(ctx context.Context, gateDir, branch string) (string, bool) 
 		return "", false
 	}
 	ref := "refs/heads/" + branch
-	_, exists, err := git.ExactRefTarget(ctx, gateDir, ref)
+	if symbolic, err := git.Run(ctx, gateDir, "symbolic-ref", "-q", ref); err == nil && strings.TrimSpace(symbolic) != "" {
+		return "", false
+	}
+	target, exists, err := git.ExactRefTarget(ctx, gateDir, ref)
 	if err != nil {
 		return "", false
 	}
 	if !exists {
 		return "", true
 	}
+	target = strings.TrimSpace(target)
 	head, err := git.Run(ctx, gateDir, "rev-parse", ref+"^{commit}")
 	if err != nil || strings.TrimSpace(head) == "" {
 		return "", false
 	}
-	return strings.TrimSpace(head), true
+	head = strings.TrimSpace(head)
+	if head != target {
+		return "", false
+	}
+	return head, true
 }
 
 // isObjectID accepts only a full hexadecimal object name. Absence proofs run
@@ -1950,11 +1949,14 @@ func localRecoveryEligible(ctx context.Context, wd string, state *State, run *db
 // preservation, but rejects every existing ref that is not exactly the
 // recorded commit, including symbolic and non-commit evidence.
 func recoveryAnchorCompatible(ctx context.Context, repoDir, runID, preserved string) (bool, error) {
-	anchorRef := custody.RecoveryRef(runID)
-	if symbolic, err := git.Run(ctx, repoDir, "symbolic-ref", "-q", anchorRef); err == nil && symbolic != "" {
+	return recoveryRefCompatible(ctx, repoDir, custody.RecoveryRef(runID), preserved)
+}
+
+func recoveryRefCompatible(ctx context.Context, repoDir, ref, preserved string) (bool, error) {
+	if symbolic, err := git.Run(ctx, repoDir, "symbolic-ref", "-q", ref); err == nil && strings.TrimSpace(symbolic) != "" {
 		return false, nil
 	}
-	target, exists, err := git.ExactRefTarget(ctx, repoDir, anchorRef)
+	target, exists, err := git.ExactRefTarget(ctx, repoDir, ref)
 	if err != nil {
 		return false, err
 	}
@@ -1965,18 +1967,30 @@ func recoveryAnchorCompatible(ctx context.Context, repoDir, runID, preserved str
 	if target != preserved {
 		return false, nil
 	}
-	anchored, err := git.Run(ctx, repoDir, "rev-parse", anchorRef+"^{commit}")
-	return err == nil && anchored == preserved, nil
+	anchored, err := git.Run(ctx, repoDir, "rev-parse", ref+"^{commit}")
+	return err == nil && strings.TrimSpace(anchored) == preserved, nil
 }
 
 func recoveryAnchorMatches(ctx context.Context, repoDir, runID, preserved string) bool {
-	compatible, err := recoveryAnchorCompatible(ctx, repoDir, runID, preserved)
+	anchorRef := custody.RecoveryRef(runID)
+	return recoveryRefMatches(ctx, repoDir, anchorRef, preserved)
+}
+
+func recoveryRefMatches(ctx context.Context, repoDir, ref, preserved string) bool {
+	compatible, err := recoveryRefCompatible(ctx, repoDir, ref, preserved)
 	if err != nil || !compatible {
 		return false
 	}
-	anchorRef := custody.RecoveryRef(runID)
-	_, exists, err := git.ExactRefTarget(ctx, repoDir, anchorRef)
+	_, exists, err := git.ExactRefTarget(ctx, repoDir, ref)
 	return err == nil && exists
+}
+
+func recoveryRefAbsent(ctx context.Context, repoDir, ref string) bool {
+	if symbolic, err := git.Run(ctx, repoDir, "symbolic-ref", "-q", ref); err == nil && strings.TrimSpace(symbolic) != "" {
+		return false
+	}
+	_, exists, err := git.ExactRefTarget(ctx, repoDir, ref)
+	return err == nil && !exists
 }
 
 // classifyUserOwned reports a branch released by its terminal outcome: the

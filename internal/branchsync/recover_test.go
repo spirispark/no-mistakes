@@ -686,6 +686,21 @@ func TestReviewedSubmittedHeadRecoveryRefusesUnprovenCases(t *testing.T) {
 			},
 		},
 		{
+			name:              "gate branch is symbolic",
+			wantInspectSafety: "blocked_recover_preserved_head_missing",
+			wantRecoverSafety: "blocked_recover_diverged",
+			arrange: func(t *testing.T, f *recoverFixture) {
+				alias := "refs/heads/feature/reviewed-alias"
+				mustRun(t, f.gate, "update-ref", alias, f.preserved)
+				mustRun(t, f.gate, "symbolic-ref", "refs/heads/feature/reviewed-submitted", alias)
+			},
+			assert: func(t *testing.T, f *recoverFixture) {
+				if got := mustRun(t, f.gate, "symbolic-ref", "refs/heads/feature/reviewed-submitted"); got != "refs/heads/feature/reviewed-alias" {
+					t.Fatalf("gate branch symbolic ref = %s, want refs/heads/feature/reviewed-alias", got)
+				}
+			},
+		},
+		{
 			name:              "gate recovery ref missing",
 			wantInspectSafety: "blocked_recover_preserved_head_missing",
 			wantRecoverSafety: "blocked_recover_preserved_head_missing",
