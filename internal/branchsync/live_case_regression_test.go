@@ -228,6 +228,14 @@ func TestLiveCase_OrphanHeadStaysBlockedWhenProofFails(t *testing.T) {
 			},
 		},
 		{
+			name: "worktree carries tagged recovery evidence",
+			arrange: func(t *testing.T, f *liveCaseFixture) {
+				mustRun(t, f.local, "tag", "-a", "recorded-recovery", f.recorded, "-m", "recorded recovery")
+				tagObject := mustRun(t, f.local, "rev-parse", "refs/tags/recorded-recovery")
+				mustRun(t, f.local, "update-ref", "refs/no-mistakes/recover/"+f.run.ID, tagObject)
+			},
+		},
+		{
 			name: "worktree carries a conflicting local anchor",
 			arrange: func(t *testing.T, f *liveCaseFixture) {
 				mustRun(t, f.local, "update-ref", "refs/no-mistakes/recover-local/"+f.run.ID, f.submitted)

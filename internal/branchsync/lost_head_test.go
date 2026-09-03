@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -312,6 +313,24 @@ func TestLostPipelineHeadStaysBlockedWhenReleaseIsNotProven(t *testing.T) {
 			name: "worktree carries conflicting recovery evidence for the run",
 			arrange: func(t *testing.T, f *lostHeadFixture) {
 				mustRun(t, f.local, "update-ref", "refs/no-mistakes/recover/"+f.run.ID, f.submitted)
+			},
+		},
+		{
+			name: "worktree carries dangling symbolic recovery evidence",
+			arrange: func(t *testing.T, f *lostHeadFixture) {
+				mustRun(t, f.local, "symbolic-ref", custody.RecoveryRef(f.run.ID), "refs/no-mistakes/missing/"+f.run.ID)
+			},
+		},
+		{
+			name: "gate carries dangling symbolic local recovery evidence",
+			arrange: func(t *testing.T, f *lostHeadFixture) {
+				mustRun(t, f.gate, "symbolic-ref", custody.RecoveryLocalRef(f.run.ID), "refs/no-mistakes/missing-local/"+f.run.ID)
+			},
+		},
+		{
+			name: "gate carries dangling symbolic gate recovery evidence",
+			arrange: func(t *testing.T, f *lostHeadFixture) {
+				mustRun(t, f.gate, "symbolic-ref", custody.RecoveryGateRef(f.run.ID), "refs/no-mistakes/missing-gate/"+f.run.ID)
 			},
 		},
 		{

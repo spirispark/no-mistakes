@@ -56,6 +56,24 @@ func TestPreserveRecoveryHeadRejectsNonCommitAnchorWithoutOverwriting(t *testing
 	}
 }
 
+func TestPreserveRecoveryHeadRejectsAnnotatedTagAnchorWithoutOverwriting(t *testing.T) {
+	repo, head := recoveryTestRepo(t)
+	gitRun(t, repo, "tag", "-a", "recovery-anchor", head, "-m", "recovery anchor")
+	tagObject := gitOutput(t, repo, "rev-parse", "refs/tags/recovery-anchor")
+	gitRun(t, repo, "update-ref", RecoveryRef("run-1"), tagObject)
+
+	err := PreserveRecoveryHead(context.Background(), repo, "run-1", head)
+	if err == nil || !strings.Contains(err.Error(), "conflicts") {
+		t.Fatalf("tag anchor error = %v", err)
+	}
+	if got := gitOutput(t, repo, "rev-parse", RecoveryRef("run-1")); got != tagObject {
+		t.Fatalf("tag anchor overwritten: got %s, want %s", got, tagObject)
+	}
+	if got := gitOutput(t, repo, "rev-parse", RecoveryRef("run-1")+"^{commit}"); got != head {
+		t.Fatalf("tag anchor peeled to %s, want %s", got, head)
+	}
+}
+
 func TestPreserveRecoveryAnchorRejectsDanglingSymbolicRefWithoutCreatingTarget(t *testing.T) {
 	repo, head := recoveryTestRepo(t)
 	ref := RecoveryLocalRef("run-1")

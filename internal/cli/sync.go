@@ -31,7 +31,9 @@ func newSyncCmd() *cobra.Command {
 			"--recover returns custody of a branch whose run went terminal with unpublished\n" +
 			"pipeline commits: it anchors the preserved head, then either fast-forwards a\n" +
 			"clean behind worktree or adopts a diverged preserved head only when proven to\n" +
-			"carry every local change. Unproven divergence refuses. When that head is no\n" +
+			"carry every local change, or when the clean branch still equals the submitted\n" +
+			"head and reviewed terminal/gate evidence all name the preserved head.\n" +
+			"Unproven divergence refuses. When that head is no\n" +
 			"longer importable - either provably gone from the worktree and the gate, or\n" +
 			"still reachable as a commit but no longer an ancestor of this branch - and\n" +
 			"this branch already contains every head the run recorded, it returns custody\n" +
@@ -225,8 +227,11 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 			fmt.Fprintln(cmd.OutOrStdout(), "  local gate branch to your current head; the worktree is never touched.")
 		} else {
 			fmt.Fprintln(cmd.OutOrStdout(), "  possible worktree change is a fast-forward of this clean behind branch, or")
-			fmt.Fprintln(cmd.OutOrStdout(), "  adoption of a diverged preserved head proven to carry every local change;")
-			fmt.Fprintln(cmd.OutOrStdout(), "  unproven divergence refuses, and --keep-local keeps the current head.")
+			fmt.Fprintln(cmd.OutOrStdout(), "  adoption of a diverged preserved head proven to carry every local change,")
+			fmt.Fprintln(cmd.OutOrStdout(), "  or adoption of an exact reviewed terminal head when the clean branch still")
+			fmt.Fprintln(cmd.OutOrStdout(), "  equals the submitted head and review-approved, terminal-head, gate-branch,")
+			fmt.Fprintln(cmd.OutOrStdout(), "  and exact recovery-ref evidence all name that head; unproven divergence")
+			fmt.Fprintln(cmd.OutOrStdout(), "  refuses, and --keep-local keeps the current head.")
 		}
 		fmt.Fprint(cmd.OutOrStdout(), "  Return custody of this branch? [y/N] ")
 		line, readErr := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')

@@ -67,7 +67,7 @@ type RunManager struct {
 	subMu          sync.Mutex
 	subscribers    map[string][]*eventMailbox // runID → subscriber mailboxes
 	stateRevs      map[string]int64           // runID → monotonic state revision
-	completedRuns  map[string]bool            // runIDs whose goroutines have finished
+	completedRuns  map[string]bool            // runIDs whose terminal stream boundary has been reached
 	completedOrder []string                   // insertion order for FIFO eviction
 }
 
@@ -337,6 +337,12 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	m.wg.Add(1)
 	go func() {
 		startedAt := time.Now()
+		var closeRunStream sync.Once
+		closeSubscribers := func() {
+			closeRunStream.Do(func() {
+				m.closeSubscribers(plan.run.ID)
+			})
+		}
 		defer m.wg.Done()
 		defer close(done)
 		defer func() {
@@ -350,7 +356,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			}
 			cancel(nil)
 			_ = plan.agent.Close()
-			m.closeSubscribers(plan.run.ID)
+			closeSubscribers()
 			m.removeRunWorktree(plan.repo.ID, plan.run.ID, plan.gateDir, plan.workDir, "resumed_run_finished")
 			// A recovered run is a finished run too. This is the second of the
 			// two completion boundaries, and leaving it out is what let a run
@@ -375,6 +381,10 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			}
 			slog.Error("recovered pipeline failed", "run_id", plan.run.ID, "error", err)
 		}
+		// Terminal DB state and stream EOF are the same user-visible boundary.
+		// Cleanup below can be slow, so do not leave completed-run subscribers
+		// waiting for worktree or evidence teardown.
+		closeSubscribers()
 		fields := telemetry.Fields{
 			"action":      "finished",
 			"trigger":     "recovery",
@@ -1114,6 +1124,12 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	m.wg.Add(1)
 	go func() {
 		startedAt := time.Now()
+		var closeRunStream sync.Once
+		closeSubscribers := func() {
+			closeRunStream.Do(func() {
+				m.closeSubscribers(run.ID)
+			})
+		}
 		defer m.wg.Done()
 		defer close(done)
 		defer func() {
@@ -1151,7 +1167,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 			cancel(nil)
 			ag.Close()
 			// Close subscriber channels for this run.
-			m.closeSubscribers(run.ID)
+			closeSubscribers()
 			m.removeRunWorktree(repo.ID, run.ID, gateDir, wtDir, "run_finished")
 			m.cleanupRunEvidence(cfg, run.ID)
 			// Remove tracking.
@@ -1194,6 +1210,10 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 			telemetry.Track("run", fields)
 			slog.Info("pipeline completed", "run_id", run.ID)
 		}
+		// Terminal DB state and stream EOF are the same user-visible boundary.
+		// Eval capture and cleanup below can be slow, so do not leave
+		// completed-run subscribers waiting for best-effort post-run work.
+		closeSubscribers()
 		// Collection runs here, on the finished run, because a case is only
 		// honest once the human gate decision it labels is recorded - which is
 		// exactly what reaching this point means. It is last on purpose: the
