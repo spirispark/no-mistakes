@@ -1186,7 +1186,7 @@ func TestInspectDoesNotAdvertiseRecoveryWhenTerminalAnchorIsNotACommit(t *testin
 
 	f := newRecoverFixture(t, types.RunCancelled)
 	mustRun(t, f.local, "fetch", f.gate, f.preserved)
-	blobPath := filepath.Join(f.local, "anchor-evidence.txt")
+	blobPath := filepath.Join(t.TempDir(), "anchor-evidence.txt")
 	mustWrite(t, blobPath, "conflicting evidence\n")
 	blob := mustRun(t, f.gate, "hash-object", "-w", blobPath)
 	mustRun(t, f.gate, "update-ref", f.anchorRef(), blob)
