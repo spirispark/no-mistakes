@@ -698,6 +698,9 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 	gateAnchor := custody.RecoveryRef(run.ID)
 	gateAnchorAvailable := false
+	if symbolic, err := git.Run(ctx, gateDir, "symbolic-ref", "-q", gateAnchor); err == nil && symbolic != "" {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", "the run recovery ref is symbolic instead of an exact preserved-head anchor; inspect the recorded and live heads before returning custody; no files or refs were changed")
+	}
 	gateAnchorTarget, gateAnchorExists, targetErr := git.ExactRefTarget(ctx, gateDir, gateAnchor)
 	if targetErr != nil {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", "the run recovery ref could not be inspected; inspect the recorded and live heads before returning custody; no files or refs were changed")
@@ -1970,6 +1973,9 @@ func recoveryAnchorCompatible(ctx context.Context, repoDir, runID, preserved str
 
 func gateRecoveryAnchorMatches(ctx context.Context, repoDir, runID, preserved string) bool {
 	anchorRef := custody.RecoveryRef(runID)
+	if symbolic, err := git.Run(ctx, repoDir, "symbolic-ref", "-q", anchorRef); err == nil && symbolic != "" {
+		return false
+	}
 	_, exists, err := git.ExactRefTarget(ctx, repoDir, anchorRef)
 	if err != nil || !exists {
 		return false

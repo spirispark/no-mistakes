@@ -1032,6 +1032,32 @@ func TestHumanSyncRecoverRequiresConfirmationOutsideTTY(t *testing.T) {
 	}
 }
 
+func TestHumanSyncRecoverTTYConfirmationMentionsReviewedHeadProof(t *testing.T) {
+	f := newCLIRecoverFixture(t)
+	previous := syncInteractive
+	syncInteractive = func() bool { return true }
+	t.Cleanup(func() { syncInteractive = previous })
+
+	cmd := newRootCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetIn(strings.NewReader("n\n"))
+	cmd.SetArgs([]string{"sync", "--recover"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("interactive recover cancellation: %v\n%s", err, buf.String())
+	}
+	rendered := buf.String()
+	for _, want := range []string{"exact reviewed terminal head", "equals the submitted head", "gate-branch", "recovery-ref", "Return custody of this branch?"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("recover confirmation missing %q:\n%s", want, rendered)
+		}
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatal("cancelled confirmation moved HEAD")
+	}
+}
+
 func cliGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	out, err := git.Run(context.Background(), dir, args...)

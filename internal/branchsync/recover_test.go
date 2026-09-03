@@ -623,6 +623,7 @@ func TestReviewedSubmittedHeadRecoveryRefusesUnprovenCases(t *testing.T) {
 	cases := []struct {
 		name              string
 		arrange           func(t *testing.T, f *recoverFixture)
+		assert            func(t *testing.T, f *recoverFixture)
 		wantInspectSafety string
 		wantRecoverSafety string
 	}{
@@ -701,6 +702,19 @@ func TestReviewedSubmittedHeadRecoveryRefusesUnprovenCases(t *testing.T) {
 			},
 		},
 		{
+			name:              "gate recovery ref is symbolic",
+			wantInspectSafety: "blocked_recover_preserved_head_missing",
+			wantRecoverSafety: "blocked_recover_anchor_mismatch",
+			arrange: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.gate, "symbolic-ref", f.anchorRef(), "refs/heads/feature/reviewed-submitted")
+			},
+			assert: func(t *testing.T, f *recoverFixture) {
+				if got := mustRun(t, f.gate, "symbolic-ref", f.anchorRef()); got != "refs/heads/feature/reviewed-submitted" {
+					t.Fatalf("symbolic recovery anchor = %s, want refs/heads/feature/reviewed-submitted", got)
+				}
+			},
+		},
+		{
 			name:              "different branch",
 			wantInspectSafety: "blocked_wrong_branch",
 			wantRecoverSafety: "blocked_recover_not_applicable",
@@ -747,6 +761,9 @@ func TestReviewedSubmittedHeadRecoveryRefusesUnprovenCases(t *testing.T) {
 			}
 			if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != before {
 				t.Fatalf("refusal moved HEAD from %s to %s", before, got)
+			}
+			if tc.assert != nil {
+				tc.assert(t, f)
 			}
 			if f.custodyReturned() {
 				t.Fatal("refusal stamped custody")
