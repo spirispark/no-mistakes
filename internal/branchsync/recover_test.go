@@ -735,6 +735,42 @@ func TestReviewedSubmittedHeadRecoveryRefusesUnprovenCases(t *testing.T) {
 			},
 		},
 		{
+			name:              "worktree recovery ref is symbolic",
+			wantInspectSafety: "blocked_recover_preserved_head_missing",
+			wantRecoverSafety: "blocked_recover_anchor_mismatch",
+			arrange: func(t *testing.T, f *recoverFixture) {
+				evidenceRef := "refs/no-mistakes/local-evidence/" + f.run.ID
+				mustRun(t, f.local, "fetch", f.gate, f.anchorRef()+":"+evidenceRef)
+				mustRun(t, f.local, "symbolic-ref", f.anchorRef(), evidenceRef)
+			},
+			assert: func(t *testing.T, f *recoverFixture) {
+				if got := mustRun(t, f.local, "symbolic-ref", f.anchorRef()); got != "refs/no-mistakes/local-evidence/"+f.run.ID {
+					t.Fatalf("symbolic recovery anchor = %s, want local evidence ref", got)
+				}
+			},
+		},
+		{
+			name:              "worktree recovery ref is annotated tag",
+			wantInspectSafety: "blocked_recover_preserved_head_missing",
+			wantRecoverSafety: "blocked_recover_anchor_mismatch",
+			arrange: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.local, "fetch", f.gate, f.anchorRef())
+				configureIdentity(t, f.local)
+				mustRun(t, f.local, "tag", "-a", "local-reviewed-anchor", f.preserved, "-m", "local reviewed anchor")
+				tagObject := mustRun(t, f.local, "rev-parse", "refs/tags/local-reviewed-anchor")
+				mustRun(t, f.local, "update-ref", f.anchorRef(), tagObject)
+			},
+			assert: func(t *testing.T, f *recoverFixture) {
+				tagObject := mustRun(t, f.local, "rev-parse", "refs/tags/local-reviewed-anchor")
+				if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != tagObject {
+					t.Fatalf("recovery anchor = %s, want local tag object %s", got, tagObject)
+				}
+				if got := mustRun(t, f.local, "rev-parse", f.anchorRef()+"^{commit}"); got != f.preserved {
+					t.Fatalf("peeled recovery anchor = %s, want preserved %s", got, f.preserved)
+				}
+			},
+		},
+		{
 			name:              "different branch",
 			wantInspectSafety: "blocked_wrong_branch",
 			wantRecoverSafety: "blocked_recover_not_applicable",

@@ -733,10 +733,11 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		}
 	}
 
-	anchored := false
-	if existing, anchorErr := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}"); anchorErr == nil && existing == preserved {
-		anchored = true
+	compatible, err := recoveryAnchorCompatible(ctx, wd, run.ID, preserved)
+	if err != nil || !compatible {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", "the invoking worktree recovery ref conflicts with the recorded pipeline head; inspect both objects before returning custody; no files or refs were changed")
 	}
+	anchored := recoveryAnchorMatches(ctx, wd, run.ID, preserved)
 	if !anchored {
 		if fetchErr := git.FetchRemoteRef(ctx, wd, gateDir, gateAnchor, preserved); fetchErr != nil {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be fetched from the local gate; no files or refs were changed")
@@ -1068,8 +1069,7 @@ func (s *Service) anchorReachablePreserved(ctx context.Context, state State, run
 	if err := custody.PreserveRecoveryHead(ctx, s.workDir(), runID, preserved); err != nil {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be anchored locally; no files or refs were changed"), false
 	}
-	anchorRef := custody.RecoveryRef(runID)
-	if anchored, err := git.Run(ctx, s.workDir(), "rev-parse", anchorRef+"^{commit}"); err != nil || anchored != preserved {
+	if !recoveryAnchorMatches(ctx, s.workDir(), runID, preserved) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be anchored locally; no files or refs were changed"), false
 	}
 	return State{}, true
@@ -1546,7 +1546,7 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 			}
 			if s.recoveryLocallyDiverged(ctx, state, run) {
 				target := run.HeadSHA
-				if anchored, err := git.Run(ctx, s.workDir(), "rev-parse", custody.RecoveryRef(run.ID)+"^{commit}"); err == nil && anchored == run.HeadSHA {
+				if recoveryAnchorMatches(ctx, s.workDir(), run.ID, run.HeadSHA) {
 					target = custody.RecoveryRef(run.ID)
 				}
 				state.Safety = "blocked_recover_diverged"
@@ -1574,17 +1574,8 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 	if state == nil || run == nil || strings.TrimSpace(run.HeadSHA) == "" {
 		return false
 	}
-	localAnchor := custody.RecoveryRef(run.ID)
-	_, localAnchorExists, err := git.ExactRefTarget(ctx, s.workDir(), localAnchor)
-	if err != nil {
-		return false
-	}
-	if localAnchorExists {
-		anchored, err := git.Run(ctx, s.workDir(), "rev-parse", localAnchor+"^{commit}")
-		if err != nil || anchored != run.HeadSHA {
-			return false
-		}
-	} else if target, err := git.Run(ctx, s.workDir(), "symbolic-ref", "-q", localAnchor); err == nil && target != "" {
+	compatible, err := recoveryAnchorCompatible(ctx, s.workDir(), run.ID, run.HeadSHA)
+	if err != nil || !compatible {
 		return false
 	}
 	local := state.Local.Head
@@ -1604,7 +1595,7 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 	if _, err := os.Stat(gateDir); err != nil {
 		return localEligible
 	}
-	compatible, err := recoveryAnchorCompatible(ctx, gateDir, run.ID, preserved)
+	compatible, err = recoveryAnchorCompatible(ctx, gateDir, run.ID, preserved)
 	if err != nil || !compatible {
 		return false
 	}
@@ -1622,7 +1613,7 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 	}
 	localInGate := objectExists(ctx, gateDir, local)
 	if !localInGate {
-		gateAnchorMatches := gateRecoveryAnchorMatches(ctx, gateDir, run.ID, preserved)
+		gateAnchorMatches := recoveryAnchorMatches(ctx, gateDir, run.ID, preserved)
 		if objectExists(ctx, s.workDir(), preserved) {
 			if local == ptr(run.SubmittedHeadSHA) && !gateAnchorMatches {
 				return false
@@ -1680,7 +1671,7 @@ func (s *Service) reviewedSubmittedHeadRecovery(ctx context.Context, state *Stat
 		return false
 	}
 	preserved := strings.TrimSpace(run.HeadSHA)
-	if !gateRecoveryAnchorMatches(ctx, gateDir, run.ID, preserved) {
+	if !recoveryAnchorMatches(ctx, gateDir, run.ID, preserved) {
 		return false
 	}
 	gateBranch, readable := gateBranchHead(ctx, gateDir, state.Local.Branch)
@@ -1713,7 +1704,7 @@ func (s *Service) recoveryLocallyDiverged(ctx context.Context, state *State, run
 	if _, err := os.Stat(gateDir); err != nil {
 		return false
 	}
-	gateAnchorMatches := gateRecoveryAnchorMatches(ctx, gateDir, run.ID, preserved)
+	gateAnchorMatches := recoveryAnchorMatches(ctx, gateDir, run.ID, preserved)
 	if local == ptr(run.SubmittedHeadSHA) && !objectExists(ctx, gateDir, local) && !gateAnchorMatches {
 		return false
 	}
@@ -1978,7 +1969,7 @@ func recoveryAnchorCompatible(ctx context.Context, repoDir, runID, preserved str
 	return err == nil && anchored == preserved, nil
 }
 
-func gateRecoveryAnchorMatches(ctx context.Context, repoDir, runID, preserved string) bool {
+func recoveryAnchorMatches(ctx context.Context, repoDir, runID, preserved string) bool {
 	compatible, err := recoveryAnchorCompatible(ctx, repoDir, runID, preserved)
 	if err != nil || !compatible {
 		return false
