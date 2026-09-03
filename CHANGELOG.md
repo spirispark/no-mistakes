@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.58.0](https://github.com/spirispark/no-mistakes/compare/v1.57.1...v1.58.0) (2026-09-03)
+
+
+### Features
+
+* add per-run commit trailers ([10296f2](https://github.com/spirispark/no-mistakes/commit/10296f2f9962aa0b10897ff19e6ca1b6cc006a78))
+* add per-run commit trailers ([659b619](https://github.com/spirispark/no-mistakes/commit/659b61981b3e216a6f3414a94e4373e2e962c517))
+* add shared no-mistakes PR enforcement action ([#819](https://github.com/spirispark/no-mistakes/issues/819)) ([32d396a](https://github.com/spirispark/no-mistakes/commit/32d396ac0f29135daf7fcb9964aba9d5f4e796d6))
+* **scm:** add Gitea as a fifth SCM provider ([#789](https://github.com/spirispark/no-mistakes/issues/789)) ([c82cfe8](https://github.com/spirispark/no-mistakes/commit/c82cfe81d39d4746ef190cbadc1bb79a730a1a23))
+
+
+### Bug Fixes
+
+* **branchsync:** recover gate-preserved pipeline heads ([#5](https://github.com/spirispark/no-mistakes/issues/5)) ([de0989b](https://github.com/spirispark/no-mistakes/commit/de0989b6c7a9ccb5b09174b89167a7a7a51920fa))
+* **branchsync:** recover reviewed submitted-head replacements ([#6](https://github.com/spirispark/no-mistakes/issues/6)) ([8807a49](https://github.com/spirispark/no-mistakes/commit/8807a492e1b18d0bd921b969cb92227ef875e751))
+* **branchsync:** release custody when a recorded pipeline head is provably gone ([#2](https://github.com/spirispark/no-mistakes/issues/2)) ([6f71188](https://github.com/spirispark/no-mistakes/commit/6f71188124666c95ccb5bfb2d6cce2b432a90e28))
+* **branchsync:** release custody when orphan pipeline head is integrated into the worktree branch ([#4](https://github.com/spirispark/no-mistakes/issues/4)) ([3884f70](https://github.com/spirispark/no-mistakes/commit/3884f70dda66d2a2071ad090db7deed4aba24ab1))
+* keep fresh trailer-free reruns explicit ([7f095c9](https://github.com/spirispark/no-mistakes/commit/7f095c9bba16c16aa291c6d86456830502da31e2))
+* **pipeline:** park CI step at ask-user gate on persistent check-read failures ([#654](https://github.com/spirispark/no-mistakes/issues/654)) ([c2a75d0](https://github.com/spirispark/no-mistakes/commit/c2a75d0b047f8002f3148606c3efa9061efca466))
+* **pipeline:** retry GitHub Actions pre-run infrastructure failures ([#678](https://github.com/spirispark/no-mistakes/issues/678)) ([bbd769f](https://github.com/spirispark/no-mistakes/commit/bbd769f6e7712255db80f698d82d2d465de104c1))
+
 ## [1.57.1](https://github.com/kunchenguid/no-mistakes/compare/v1.57.0...v1.57.1) (2026-08-22)
 
 
