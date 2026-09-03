@@ -715,6 +715,26 @@ func TestReviewedSubmittedHeadRecoveryRefusesUnprovenCases(t *testing.T) {
 			},
 		},
 		{
+			name:              "gate recovery ref is annotated tag",
+			wantInspectSafety: "blocked_recover_preserved_head_missing",
+			wantRecoverSafety: "blocked_recover_anchor_mismatch",
+			arrange: func(t *testing.T, f *recoverFixture) {
+				configureIdentity(t, f.gate)
+				mustRun(t, f.gate, "tag", "-a", "reviewed-anchor", f.preserved, "-m", "reviewed anchor")
+				tagObject := mustRun(t, f.gate, "rev-parse", "refs/tags/reviewed-anchor")
+				mustRun(t, f.gate, "update-ref", f.anchorRef(), tagObject)
+			},
+			assert: func(t *testing.T, f *recoverFixture) {
+				tagObject := mustRun(t, f.gate, "rev-parse", "refs/tags/reviewed-anchor")
+				if got := mustRun(t, f.gate, "rev-parse", f.anchorRef()); got != tagObject {
+					t.Fatalf("recovery anchor = %s, want tag object %s", got, tagObject)
+				}
+				if got := mustRun(t, f.gate, "rev-parse", f.anchorRef()+"^{commit}"); got != f.preserved {
+					t.Fatalf("peeled recovery anchor = %s, want preserved %s", got, f.preserved)
+				}
+			},
+		},
+		{
 			name:              "different branch",
 			wantInspectSafety: "blocked_wrong_branch",
 			wantRecoverSafety: "blocked_recover_not_applicable",
@@ -1222,6 +1242,33 @@ func TestRecoverRejectsSymbolicGateAnchorWithoutOverwritingIt(t *testing.T) {
 	}
 	if got := mustRun(t, f.gate, "symbolic-ref", f.anchorRef()); got != "refs/heads/feature/recover" {
 		t.Fatalf("symbolic recovery anchor = %s, want refs/heads/feature/recover", got)
+	}
+}
+
+func TestRecoverRejectsAnnotatedTagGateAnchorWithoutOverwritingIt(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	configureIdentity(t, f.gate)
+	mustRun(t, f.gate, "tag", "-a", "recovery-anchor", f.preserved, "-m", "recovery anchor")
+	tagObject := mustRun(t, f.gate, "rev-parse", "refs/tags/recovery-anchor")
+	mustRun(t, f.gate, "update-ref", f.anchorRef(), tagObject)
+	mustRun(t, f.local, "fetch", f.gate, f.preserved)
+	mustRun(t, f.local, "reset", "--hard", f.preserved)
+
+	inspected := f.service.InspectCached(f.ctx)
+	if inspected.NextAction == nil || inspected.NextAction.Code == "recover_custody" {
+		t.Fatalf("inspect advertised recovery despite tag gate evidence = %#v", inspected)
+	}
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Safety != "blocked_recover_anchor_mismatch" {
+		t.Fatalf("recover with tag anchor = %#v", state)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", f.anchorRef()); got != tagObject {
+		t.Fatalf("recovery anchor = %s, want original tag object %s", got, tagObject)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", f.anchorRef()+"^{commit}"); got != f.preserved {
+		t.Fatalf("peeled recovery anchor = %s, want preserved %s", got, f.preserved)
 	}
 }
 
